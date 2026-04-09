@@ -22,14 +22,16 @@ Projektissa ei ole nimipäiviä listattuna, mutta tilalla on esimerkkitiedosto)
 - nimipaivat.json johon lisätään nimipäivät
 - .env tiedosto johon laitetaan bot token, client_id ja channel_id
 
+## Paketit
+```bash
+npm install discord.js @discordjs/rest @discordjs/builders dotenv node-cron axios cheerio
+```
+
 ## .env tiedosto
 TOKEN=discord-bottisi-token
 CLIENT_ID=bottisi-client-id
 CHANNEL_ID=kanavan-id-johon-viestit-lähetetään
 
-```bash
-npm install discord.js @discordjs/rest @discordjs/builders dotenv node-cron axios cheerio
-```
 
 ## Muistutus tekijänoikeuksista!
 Helsingin yliopistolla on tekijänoikeus laatimiinsa nimipäiväluetteloihin, joita ovat suomalainen ja suomenruotsalainen nimipäivälista sekä kissojen, koirien ja hevosten nimipäivälistat. Oikeus perustuu tekijänoikeuslain ns. luettelopykälään. Nimipäivien luettelosuoja vahvistettiin korkeimmassa oikeudessa vuonna 2000.
