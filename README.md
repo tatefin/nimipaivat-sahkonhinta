@@ -29,6 +29,7 @@ CHANNEL_ID=kanavan-id-johon-viestit-lähetetään
 
 ```bash
 npm install discord.js @discordjs/rest @discordjs/builders dotenv node-cron axios cheerio
+```
 
 ## Muistutus tekijänoikeuksista!
 Helsingin yliopistolla on tekijänoikeus laatimiinsa nimipäiväluetteloihin, joita ovat suomalainen ja suomenruotsalainen nimipäivälista sekä kissojen, koirien ja hevosten nimipäivälistat. Oikeus perustuu tekijänoikeuslain ns. luettelopykälään. Nimipäivien luettelosuoja vahvistettiin korkeimmassa oikeudessa vuonna 2000.
