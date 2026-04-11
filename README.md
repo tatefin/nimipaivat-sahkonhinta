@@ -18,7 +18,7 @@ Projektissa ei ole nimipäiviä listattuna, mutta tilalla on esimerkkitiedosto)
 ## Vaatimukset
 
 - Node.js 20+
-- npm-paketit:
+- npm-paketit jotka listattuna alempana
 - nimipaivat.json johon lisätään nimipäivät
 - .env tiedosto johon laitetaan bot token, client_id ja channel_id
 
