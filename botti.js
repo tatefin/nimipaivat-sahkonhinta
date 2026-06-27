@@ -1,325 +1,344 @@
 require("dotenv").config();
 
-const {
-  Client,
-  GatewayIntentBits,
-  REST,
-  Routes,
-  SlashCommandBuilder,
-  EmbedBuilder
-} = require("discord.js");
-
+const { Client, GatewayIntentBits, REST, Routes, SlashCommandBuilder, EmbedBuilder } = require("discord.js");
 const fs = require("fs");
 const path = require("path");
 const cron = require("node-cron");
 const axios = require("axios");
 const cheerio = require("cheerio");
 
-const TOKEN = process.env.TOKEN;
-const CLIENT_ID = process.env.CLIENT_ID;
-const CHANNEL_ID = process.env.CHANNEL_ID;
-
+const { TOKEN, CLIENT_ID, CHANNEL_ID, WEATHER_API_KEY } = process.env;
 const client = new Client({ intents: [GatewayIntentBits.Guilds] });
+const DT_HEADERS = { "Digitraffic-User": "discord-bot/tunkki" };
 
-/* ------------------ NIMIPÄIVÄT ------------------ */
-function haeNimipaivat() {
-  try {
-    const data = JSON.parse(
-      fs.readFileSync(path.join(__dirname, "nimipaivat.json"), "utf-8")
-    );
-    const today = new Date();
-    const key = `${String(today.getMonth() + 1).padStart(2, "0")}-${String(today.getDate()).padStart(2, "0")}`;
-    return data[key] || [];
-  } catch {
-    return [];
-  }
+/* --- APU --- */
+
+const tanyKey = () => {
+  const d = new Date();
+  return `${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`;
+};
+
+const lueJSON = (tiedosto) => {
+  try { return JSON.parse(fs.readFileSync(path.join(__dirname, tiedosto))); }
+  catch { return {}; }
+};
+
+const muotoilePaivaEro = d => d === 0 ? "tänään!" : d === 1 ? "huomenna" : `${d} päivän päästä`;
+
+const muotoileNimet = nimet =>
+  !nimet.length ? "Tänään ei ole nimipäiviä. 😊"
+  : nimet.length === 1 ? `🎉 Onnea **${nimet[0]}**!`
+  : `🎊 Nimipäivät: **${nimet.join(", ")}**`;
+
+const muotoileSynttarit = nimet =>
+  nimet.length ? `🎂 Tänään synttärit: ${nimet.join(", ")}!` : null;
+
+const haeNimipaivat = () => lueJSON("nimipaivat.json")[tanyKey()] || [];
+const haeSynttarit  = () => lueJSON("syntymapaivat.json")[tanyKey()] || [];
+
+/* --- LIPUTUSPÄIVÄT --- */
+
+function getEaster(year) {
+  const f = Math.floor, a = year%19, b = f(year/100), c = year%100,
+    d = f(b/4), e = b%4, g = f((8*b+13)/25),
+    h = (19*a+b-d-g+15)%30, j = f(c/4), k = c%4,
+    m = f((a+11*h)/319), r = (2*e+2*j-k-h+m+32)%7,
+    n = f((h-m+r+90)/25), p = (h-m+r+n+19)%32;
+  return new Date(year, n-1, p);
 }
 
-/* ------------------ LIPUTUSPÄIVÄT ------------------ */
+const addDays = (date, days) => { const d = new Date(date); d.setDate(d.getDate()+days); return d; };
+
+const getNthWeekday = (year, month, weekday, nth) => {
+  const first = new Date(year, month, 1);
+  return new Date(year, month, 1 + (7+weekday-first.getDay())%7 + (nth-1)*7);
+};
+
+const findSaturday = (year, month, from, to) => {
+  for (let d = from; d <= to; d++) {
+    const date = new Date(year, month, d);
+    if (date.getDay() === 6) return date;
+  }
+};
+
 function haeLiputuspaiva() {
-  const liputuspaivat = {
-    "02-05": "J. L. Runebergin päivä",
-    "02-28": "Kalevalan päivä",
-    "03-19": "Minna Canthin päivä",
-    "04-09": "Mikael Agricolan päivä",
-    "05-01": "Vappu",
-    "05-09": "Eurooppa-päivä",
-    "06-04": "Puolustusvoimain lippujuhlan päivä",
-    "06-20": "Juhannusaatto",
-    "12-06": "Itsenäisyyspäivä"
+  const d = new Date(), year = d.getFullYear();
+  const isSame = dt => dt && dt.getDate()===d.getDate() && dt.getMonth()===d.getMonth();
+
+  const fixed = {
+    "01-06":"Loppiainen","02-05":"Runebergin päivä","02-28":"Kalevalan päivä",
+    "03-19":"Minna Canthin päivä","04-09":"Agricolan päivä","04-27":"Veteraanipäivä",
+    "05-01":"Vappu","05-09":"Eurooppa-päivä","05-12":"Snellmanin päivä",
+    "06-04":"Puolustusvoimat","07-06":"Eino Leinon päivä","10-10":"Aleksis Kiven päivä",
+    "10-24":"YK-päivä","11-06":"Ruotsalaisuuden päivä","11-20":"Lapsen oikeudet",
+    "12-06":"Itsenäisyyspäivä","12-08":"Sibeliuksen päivä"
   };
 
-  const today = new Date();
-  const key = `${String(today.getMonth() + 1).padStart(2, "0")}-${String(today.getDate()).padStart(2, "0")}`;
+  const easter = getEaster(year);
+  const liikkuvat = [
+    [addDays(easter,-2),"Pitkäperjantai"], [easter,"Pääsiäispäivä"],
+    [addDays(easter,39),"Helatorstai"],    [addDays(easter,49),"Helluntai"],
+    [getNthWeekday(year,4,0,2),"Äitienpäivä"],
+    [getNthWeekday(year,10,0,2),"Isänpäivä"],
+    [findSaturday(year,5,20,26),"Juhannuspäivä"],
+    [findSaturday(year,9,31,37),"Pyhäinpäivä"],
+  ];
 
-  return liputuspaivat[key] || null;
+  return liikkuvat.find(([dt])=>isSame(dt))?.[1] || fixed[tanyKey()] || null;
 }
 
-/* ------------------ APU ------------------ */
-function muotoileNimetPersoonallinen(nimet) {
-  if (nimet.length === 0) return "Tänään ei ole nimipäiviä. 😊";
-  if (nimet.length === 1) return `🎉 Onnea **${nimet[0]}**!`;
-  return `🎊 Nimipäivät: **${nimet.join(", ")}**`;
+/* --- SÄHKÖ --- */
+
+function parsePrice(text) {
+  return parseFloat(text.replace(",",".").replace(/[^\d.\-−]/g,"").replace("−","-"));
 }
 
-/* ------------------ PÖRSSISÄHKÖ ------------------ */
 async function haePorssisahkoData(onlyFuture = false) {
   try {
-    const res = await axios.get("https://www.porssisahkoa.fi/", {
-      headers: { "User-Agent": "Mozilla/5.0" }
-    });
-
-    const $ = cheerio.load(res.data);
+    const $ = cheerio.load((await axios.get("https://www.porssisahkoa.fi/")).data);
     const prices = [];
-
-    $("table tbody tr").each((i, el) => {
-      const cols = $(el).find("td").map((i, td) => $(td).text().trim()).get();
-      if (cols.length >= 2) {
-        const time = cols[0];
-        const price = parseFloat(cols[1].replace(",", ".").replace("c/kWh", ""));
-        if (!isNaN(price)) prices.push({ time, price });
-      }
+    $("table tbody tr").each((_, el) => {
+      const [time, val] = $(el).find("td").map((_,td)=>$(td).text().trim()).get();
+      const price = parsePrice(val);
+      if (!isNaN(price)) prices.push({ time, price });
     });
-
     if (!prices.length) return null;
-
-    let filtered = prices;
-
-    if (onlyFuture) {
-      const now = new Date();
-      const currentHour = now.getHours();
-
-      filtered = prices.filter(p => {
-        const hour = parseInt(p.time.split("-")[0]);
-        return hour >= currentHour;
-      });
-    }
-
+    const filtered = onlyFuture
+      ? prices.filter(p => parseInt(p.time) >= new Date().getHours())
+      : prices;
     if (!filtered.length) return null;
+    const sorted = [...filtered].sort((a,b)=>a.price-b.price);
+    return {
+      halvin: sorted[0],
+      kallein: sorted.at(-1),
+      keski: (filtered.reduce((a,b)=>a+b.price,0)/filtered.length).toFixed(2)
+    };
+  } catch { return null; }
+}
 
-    const sorted = [...filtered].sort((a, b) => a.price - b.price);
-    const halvin = sorted[0];
-    const kallein = sorted[sorted.length - 1];
-    const avg = (filtered.reduce((a, b) => a + b.price, 0) / filtered.length).toFixed(2);
+/* --- LIIKENNE --- */
 
-    return { halvin, kallein, keski: avg, prices: filtered };
-
+async function haeTiehairot() {
+  try {
+    const { data } = await axios.get(
+      "https://tie.digitraffic.fi/api/traffic-message/v1/messages?inactiveHours=0&includeAreaGeometry=false&situationType=TRAFFIC_ANNOUNCEMENT",
+      { headers: DT_HEADERS }
+    );
+    return (data.features || []).slice(0,5).map(f => {
+      const ann = f.properties.announcements?.[0];
+      return {
+        otsikko: ann?.title?.replace(/\.$/,"") || "Häiriö",
+        sijainti: ann?.location?.description || "",
+        alkoi: ann?.timeAndDuration?.startTime
+          ? new Date(ann.timeAndDuration.startTime).toLocaleString("fi-FI",{timeZone:"Europe/Helsinki"})
+          : null
+      };
+    });
   } catch (err) {
-    console.error(err.message);
+    console.error("haeTiehairot virhe:", err.response?.status, err.message);
     return null;
   }
 }
 
-/* ------------------ KOMENNOT ------------------ */
+async function haeJunahahairot() {
+  try {
+    const vastaukset = await Promise.all(
+      ["HKI","TPE","TKU","OUL","JY"].map(asema =>
+        axios.get(
+          `https://rata.digitraffic.fi/api/v1/live-trains/station/${asema}?arrived_trains=0&arriving_trains=10&departed_trains=0&departing_trains=10&include_nonstopping=false&train_categories=Long-distance`,
+          { headers: DT_HEADERS }
+        ).then(r=>r.data).catch(()=>[])
+      )
+    );
+    const junat = Object.values(
+      vastaukset.flat().reduce((acc,t) => { acc[t.trainNumber]=t; return acc; }, {})
+    );
+    return junat
+      .filter(t => t.timeTableRows?.some(r => r.differenceInMinutes > 5))
+      .map(t => {
+        const worst = t.timeTableRows
+          .filter(r => r.differenceInMinutes > 0)
+          .sort((a,b) => b.differenceInMinutes-a.differenceInMinutes)[0];
+        return { juna:`${t.trainType}${t.trainNumber}`, myohassa:worst?.differenceInMinutes||0, asema:worst?.stationShortCode||"" };
+      })
+      .sort((a,b) => b.myohassa-a.myohassa)
+      .slice(0,5);
+  } catch (err) {
+    console.error("haeJunahahairot virhe:", err.response?.status, err.message);
+    return null;
+  }
+}
+
+/* --- SÄÄ --- */
+
+async function haeSaa(kaupunki) {
+  try {
+    const { data } = await axios.get(
+      `https://api.weatherapi.com/v1/current.json?key=${WEATHER_API_KEY}&q=${encodeURIComponent(kaupunki+", Finland")}&lang=fi`
+    );
+    return data;
+  } catch { return null; }
+}
+
+/* --- KOMENNOT --- */
+
 const commands = [
-  new SlashCommandBuilder()
-    .setName("nimipäivät")
-    .setDescription("Näyttää nimipäivät"),
+  new SlashCommandBuilder().setName("nimipäivät").setDescription("Näyttää nimipäivät"),
+  new SlashCommandBuilder().setName("nimihaku").setDescription("Hae nimipäivä")
+    .addStringOption(o => o.setName("nimi").setDescription("Nimi").setRequired(true)),
+  new SlashCommandBuilder().setName("sahko").setDescription("Näyttää sähkön hinnan"),
+  new SlashCommandBuilder().setName("saa").setDescription("Näyttää säätilan")
+    .addStringOption(o => o.setName("kaupunki").setDescription("Kaupunki").setRequired(true)),
+  new SlashCommandBuilder().setName("liikenne").setDescription("Näyttää tie- ja junaliikenteen häiriöt"),
+].map(c=>c.toJSON());
 
-  new SlashCommandBuilder()
-    .setName("nimihaku")
-    .setDescription("Hae milloin nimellä on nimipäivä")
-    .addStringOption(option =>
-      option.setName("nimi")
-        .setDescription("Anna nimi")
-        .setRequired(true)
-    ),
-
-  new SlashCommandBuilder()
-    .setName("sahko")
-    .setDescription("Näyttää sähkön hinnan")
-    .addIntegerOption(option =>
-      option.setName("tunti")
-        .setDescription("Anna tunti (0-23)")
-        .setRequired(false)
-    )
-].map(c => c.toJSON());
-
-const rest = new REST({ version: "10" }).setToken(TOKEN);
 (async () => {
   try {
-    await rest.put(Routes.applicationCommands(CLIENT_ID), { body: commands });
-    console.log("Slash-komennot rekisteröity");
-  } catch (e) {
-    console.error(e);
-  }
+    await new REST({ version:"10" }).setToken(TOKEN).put(Routes.applicationCommands(CLIENT_ID), { body:commands });
+    console.log("Slash-komennot rekisteröity.");
+  } catch (err) { console.error(err); }
 })();
 
-/* ------------------ INTERAKTIOT ------------------ */
+/* --- INTERAKTIOT --- */
+
 client.on("interactionCreate", async interaction => {
   if (!interaction.isChatInputCommand()) return;
+  const cmd = interaction.commandName;
 
-  if (interaction.commandName === "nimipäivät") {
-    const nimet = haeNimipaivat();
-
-    const embed = new EmbedBuilder()
-      .setTitle("📅 Nimipäivät")
-      .setDescription(muotoileNimetPersoonallinen(nimet))
-      .setColor(0x00ff99);
-
-    return interaction.reply({ embeds: [embed] });
+  if (cmd === "nimipäivät") {
+    return interaction.reply({
+      embeds: [new EmbedBuilder().setTitle("📅 Nimipäivät").setDescription(muotoileNimet(haeNimipaivat()))]
+    });
   }
 
-  if (interaction.commandName === "nimihaku") {
+  if (cmd === "nimihaku") {
     const nimi = interaction.options.getString("nimi").toLowerCase();
+    const data = lueJSON("nimipaivat.json");
+    const loydot = Object.entries(data)
+      .filter(([,nimet]) => nimet.map(n=>n.toLowerCase()).includes(nimi))
+      .map(([pvm]) => pvm);
 
-    try {
-      const data = JSON.parse(
-        fs.readFileSync(path.join(__dirname, "nimipaivat.json"), "utf-8")
-      );
+    if (!loydot.length) return interaction.reply(`Nimelle **${nimi}** ei löytynyt nimipäivää.`);
 
-      const loydot = [];
+    const kuukaudet = ["tammikuuta","helmikuuta","maaliskuuta","huhtikuuta","toukokuuta","kesäkuuta",
+      "heinäkuuta","elokuuta","syyskuuta","lokakuuta","marraskuuta","joulukuuta"];
+    const today = new Date();
 
-      for (const [pvm, nimet] of Object.entries(data)) {
-        if (nimet.map(n => n.toLowerCase()).includes(nimi)) {
-          loydot.push(pvm);
-        }
-      }
+    const formatted = loydot.map(p => {
+      const [kk,pv] = p.split("-").map(Number);
+      return { text:`${pv}. ${kuukaudet[kk-1]}`, date:new Date(today.getFullYear(), kk-1, pv) };
+    });
 
-      if (loydot.length === 0) {
-        return interaction.reply(`Nimelle **${nimi}** ei löytynyt nimipäivää.`);
-      }
+    const next = formatted.reduce((best, f) => {
+      let d = new Date(f.date);
+      if (d < today) d.setFullYear(d.getFullYear()+1);
+      const diff = Math.ceil((d-today)/(864e5));
+      return diff < best.diff ? { ...f, diff } : best;
+    }, { diff:Infinity });
 
-      // muotoilut
-      const kuukaudet = [
-        "tammikuuta","helmikuuta","maaliskuuta","huhtikuuta","toukokuuta","kesäkuuta",
-        "heinäkuuta","elokuuta","syyskuuta","lokakuuta","marraskuuta","joulukuuta"
-      ];
-
-      const tanaan = new Date();
-
-      const formatted = loydot.map(p => {
-        const [kk, pv] = p.split("-");
-        return {
-          text: `${parseInt(pv)}. ${kuukaudet[parseInt(kk)-1]}`,
-          date: new Date(tanaan.getFullYear(), parseInt(kk)-1, parseInt(pv))
-        };
-      });
-
-      // etsitään seuraava nimipäivä
-      let seuraava = null;
-      let minDiff = Infinity;
-
-      formatted.forEach(f => {
-        let d = new Date(f.date);
-        if (d < tanaan) d.setFullYear(d.getFullYear() + 1);
-
-        const diff = Math.ceil((d - tanaan) / (1000 * 60 * 60 * 24));
-        if (diff < minDiff) {
-          minDiff = diff;
-          seuraava = { ...f, diff };
-        }
-      });
-
-      const embed = new EmbedBuilder()
+    return interaction.reply({
+      embeds: [new EmbedBuilder()
         .setTitle("🔍 Nimipäivähaku")
-        .setDescription(`**${nimi}** nimipäivät: ${formatted.map(f => f.text).join(", ")}`)
-        .addFields({
-          name: "⏭️ Seuraava",
-          value: `${seuraava.text} (${seuraava.diff} päivän päästä)`
-        })
-        .setColor(0x3399ff);
-
-      return interaction.reply({ embeds: [embed] });
-
-    } catch (e) {
-      console.error(e);
-      return interaction.reply("Virhe nimipäivähaussa.");
-    }
+        .setDescription(`**${nimi}**: ${formatted.map(f=>f.text).join(", ")}`)
+        .addFields({ name:"⏭️ Seuraava", value:`${next.text} (${muotoilePaivaEro(next.diff)})` })]
+    });
   }
 
-  if (interaction.commandName === "sahko") {
+  if (cmd === "sahko") {
     await interaction.deferReply();
+    const data = await haePorssisahkoData(false);
+    return interaction.editReply({
+      embeds: [new EmbedBuilder()
+        .setTitle("⚡ Pörssisähkö").setURL("https://www.porssisahkoa.fi/")
+        .addFields(
+          { name:"🔻 Halvin", value:`${data.halvin.price} c/kWh\nklo ${data.halvin.time}`, inline:true },
+          { name:"⚖️ Keski",  value:`${data.keski} c/kWh`, inline:true },
+          { name:"🔺 Kallein",value:`${data.kallein.price} c/kWh\nklo ${data.kallein.time}`, inline:true }
+        )]
+    });
+  }
 
-    const tunti = interaction.options.getInteger("tunti");
-    const data = await haePorssisahkoData();
-    if (!data) return interaction.editReply("Ei saatu sähkötietoja.");
+  if (cmd === "saa") {
+    await interaction.deferReply();
+    const kaupunki = interaction.options.getString("kaupunki");
+    const data = await haeSaa(kaupunki);
+    if (!data) return interaction.editReply("Säätietoja ei löytynyt.");
+    const c = data.current;
+    return interaction.editReply({
+      embeds: [new EmbedBuilder()
+        .setTitle(`🌤️ Sää: ${data.location.name}`)
+        .setDescription(c.condition.text)
+        .setThumbnail(`https:${c.condition.icon}`)
+        .addFields(
+          { name:"🌡️ Lämpötila",  value:`${c.temp_c} °C`,                    inline:true },
+          { name:"🤔 Tuntuu kuin", value:`${c.feelslike_c} °C`,               inline:true },
+          { name:"💨 Tuuli",       value:`${(c.wind_kph/3.6).toFixed(1)} m/s`,inline:true },
+          { name:"💧 Kosteus",     value:`${c.humidity}%`,                    inline:true },
+          { name:"☁️ Pilvisyys",   value:`${c.cloud}%`,                       inline:true },
+          { name:"👀 Näkyvyys",    value:`${c.vis_km} km`,                    inline:true }
+        )]
+    });
+  }
 
-    // jos haetaan tietty tunti
-    if (tunti !== null) {
-      const loytyi = data.prices.find(p => {
-        const hour = parseInt(p.time.split("-")[0]);
-        return hour === tunti;
+  if (cmd === "liikenne") {
+    await interaction.deferReply({ ephemeral:true });
+    const [tieData, junaData] = await Promise.all([haeTiehairot(), haeJunahahairot()]);
+
+    const embed = new EmbedBuilder()
+      .setTitle("🚦 Liikennetilanne")
+      .setURL("https://liikennetilanne.fintraffic.fi/")
+      .setColor(0xe8a000);
+
+    if (!tieData)
+      embed.addFields({ name:"🚗 Tieliikenne", value:"Tietoja ei saatavilla." });
+    else if (!tieData.length)
+      embed.addFields({ name:"🚗 Tieliikenne", value:"✅ Ei aktiivisia häiriöitä." });
+    else
+      embed.addFields({ name:`🚗 Tieliikenne (${tieData.length} häiriötä)`, value:
+        tieData.map(h => `• **${h.otsikko}**${h.sijainti?`\n  ${h.sijainti}`:""}${h.alkoi?`\n  🕐 Alkaen ${h.alkoi}`:""}`).join("\n\n")
       });
 
-      if (!loytyi) {
-        return interaction.editReply(`Tunnille ${tunti} ei löytynyt hintaa.`);
-      }
+    if (!junaData)
+      embed.addFields({ name:"🚆 Junaliikenne", value:"Tietoja ei saatavilla." });
+    else if (!junaData.length)
+      embed.addFields({ name:"🚆 Junaliikenne", value:"✅ Ei merkittäviä myöhästymisiä." });
+    else
+      embed.addFields({ name:`🚆 Junaliikenne (${junaData.length} myöhässä)`, value:
+        junaData.map(j=>`• **${j.juna}** — myöhässä **${j.myohassa} min** (${j.asema})`).join("\n")
+      });
 
-      const embed = new EmbedBuilder()
-        .setTitle("⚡ Sähkön hinta")
-        .setDescription(`Klo ${tunti}:00 → **${loytyi.price} c/kWh**`)
-        .setColor(0x3399ff);
-
-      return interaction.editReply({ embeds: [embed] });
-    }
-
-    // muuten normaali näkymä
-    const embed = new EmbedBuilder()
-      .setTitle("⚡ Pörssisähkö")
-      .addFields(
-        { name: "🔻 Halvin", value: `${data.halvin.price} (${data.halvin.time})`, inline: true },
-        { name: "Keski", value: `${data.keski}`, inline: true },
-        { name: "🔺 Kallein", value: `${data.kallein.price} (${data.kallein.time})`, inline: true }
-      );
-
-    if (data.kallein.price > 20) {
-      embed.addFields({ name: "⚠️ Varoitus", value: "Sähkö on kallista tänään!" });
-    }
-
-    return interaction.editReply({ embeds: [embed] });
+    embed.setFooter({ text:"Lähde: Digitraffic / Fintraffic" }).setTimestamp();
+    return interaction.editReply({ embeds:[embed], ephemeral:true });
   }
 });
 
-/* ------------------ CRON ------------------ */
+/* --- CRON --- */
+
 client.once("ready", () => {
   console.log(`Kirjautunut: ${client.user.tag}`);
 
   cron.schedule("0 6 * * *", async () => {
-    try {
-      const channel = await client.channels.fetch(CHANNEL_ID);
-      if (!channel) return;
+    const channel = await client.channels.fetch(CHANNEL_ID);
+    const embed = new EmbedBuilder()
+      .setTitle(":wave:  Huomenta!")
+      .setURL("https://www.porssisahkoa.fi/")
+      .setDescription(muotoileNimet(haeNimipaivat()));
 
-      const nimet = haeNimipaivat();
-      const liputus = haeLiputuspaiva();
-      const sahko = await haePorssisahkoData(true);
+    const liputus = haeLiputuspaiva();
+    if (liputus) embed.addFields({ name:"🇫🇮 Liputuspäivä", value:liputus });
 
-      let vari = 0xffcc00; // oletus
+    const synttarit = muotoileSynttarit(haeSynttarit());
+    if (synttarit) embed.addFields({ name:"🎂 Onneksi olkoon", value:synttarit });
 
-      if (sahko) {
-        if (sahko.keski < 10) vari = 0x00ff99; // halpa (vihreä)
-        else if (sahko.keski > 20) vari = 0xff3300; // kallis (punainen)
-        else vari = 0xffcc00; // normaali (keltainen)
-      }
+    const sahko = await haePorssisahkoData(true);
+    if (sahko) embed.addFields({ name:"⚡ Sähkö (tästä hetkestä →)", value:
+      `🔻 ${sahko.halvin.price} c/kWh\nklo ${sahko.halvin.time}\n` +
+      `⚖️ ${sahko.keski} c/kWh\n` +
+      `🔺 ${sahko.kallein.price} c/kWh\nklo ${sahko.kallein.time}`
+    });
 
-      const embed = new EmbedBuilder()
-        .setTitle("🌞 Huomenta!")
-        .setColor(vari)
-        .setDescription(muotoileNimetPersoonallinen(nimet))
-        .setTimestamp();
-
-      if (liputus) {
-        embed.addFields({ name: "🇫🇮 Liputuspäivä", value: liputus });
-      }
-
-      if (sahko) {
-        embed.addFields(
-          { name: "🔻 Halvin", value: `${sahko.halvin.price} c/kWh (${sahko.halvin.time})`, inline: true },
-          { name: "Keski", value: `${sahko.keski}`, inline: true },
-          { name: "🔺 Kallein", value: `${sahko.kallein.price} c/kWh (${sahko.kallein.time})`, inline: true }
-        );
-
-        if (sahko.kallein.price > 20) {
-          embed.addFields({ name: "⚠️", value: "Sähkö on kallista tänään!" });
-        }
-      }
-
-      await channel.send({ embeds: [embed] });
-
-    } catch (e) {
-      console.error("CRON virhe:", e);
-    }
-  }, { timezone: "Europe/Helsinki" });
+    await channel.send({ embeds:[embed] });
+  }, { timezone:"Europe/Helsinki" });
 });
 
 client.login(TOKEN);
