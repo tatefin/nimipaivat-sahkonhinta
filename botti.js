@@ -1,11 +1,12 @@
 require("dotenv").config();
 
-const { Client, GatewayIntentBits, REST, Routes, SlashCommandBuilder, EmbedBuilder } = require("discord.js");
+const { Client, GatewayIntentBits, REST, Routes, SlashCommandBuilder, EmbedBuilder, AttachmentBuilder } = require("discord.js");
 const fs = require("fs");
 const path = require("path");
 const cron = require("node-cron");
 const axios = require("axios");
 const cheerio = require("cheerio");
+const { createCanvas } = require("canvas");
 
 const { TOKEN, CLIENT_ID, CHANNEL_ID, WEATHER_API_KEY } = process.env;
 const client = new Client({ intents: [GatewayIntentBits.Guilds] });
@@ -98,20 +99,24 @@ async function haePorssisahkoData(onlyFuture = false) {
     const $ = cheerio.load((await axios.get("https://www.porssisahkoa.fi/")).data);
     const prices = [];
     $("table tbody tr").each((_, el) => {
-      const [time, val] = $(el).find("td").map((_,td)=>$(td).text().trim()).get();
-      const price = parsePrice(val);
-      if (!isNaN(price)) prices.push({ time, price });
+      const cols = $(el).find("td").map((_,td) => $(td).text().trim()).get();
+      if (cols.length >= 2) {
+        const hour = parseInt(cols[0]);
+        const price = parsePrice(cols[1]);
+        if (!isNaN(hour) && !isNaN(price)) prices.push({ time: String(hour).padStart(2,"0"), price });
+      }
     });
     if (!prices.length) return null;
     const filtered = onlyFuture
       ? prices.filter(p => parseInt(p.time) >= new Date().getHours())
       : prices;
     if (!filtered.length) return null;
-    const sorted = [...filtered].sort((a,b)=>a.price-b.price);
+    const sorted = [...filtered].sort((a,b) => a.price-b.price);
     return {
       halvin: sorted[0],
       kallein: sorted.at(-1),
-      keski: (filtered.reduce((a,b)=>a+b.price,0)/filtered.length).toFixed(2)
+      keski: (filtered.reduce((a,b) => a+b.price, 0) / filtered.length).toFixed(2),
+      kaikki: prices  // koko päivä aina mukana graafille
     };
   } catch { return null; }
 }
@@ -169,7 +174,81 @@ async function haeJunahahairot() {
   }
 }
 
-/* --- SÄÄ --- */
+/* --- SÄHKÖGRAAFI --- */
+
+function piirraGraafi(prices) {
+  const W = 800, H = 400, PAD = { top:30, right:20, bottom:40, left:55 };
+  const cw = W - PAD.left - PAD.right;
+  const ch = H - PAD.top - PAD.bottom;
+
+  const canvas = createCanvas(W, H);
+  const ctx = canvas.getContext("2d");
+
+  // Tausta
+  ctx.fillStyle = "#2b2d31";
+  ctx.fillRect(0, 0, W, H);
+
+  const vals = prices.map(p => p.price);
+  const minV = Math.min(...vals), maxV = Math.max(...vals);
+  const range = maxV - minV || 1;
+
+  const xStep = cw / prices.length;
+  const toX = i => PAD.left + i * xStep + xStep / 2;
+  const toY = v => PAD.top + ch - ((v - minV) / range) * ch;
+
+  // Vaakaviivat
+  ctx.strokeStyle = "#3f4147";
+  ctx.lineWidth = 1;
+  for (let i = 0; i <= 4; i++) {
+    const y = PAD.top + (ch / 4) * i;
+    ctx.beginPath(); ctx.moveTo(PAD.left, y); ctx.lineTo(PAD.left + cw, y); ctx.stroke();
+    const label = (maxV - (range / 4) * i).toFixed(2);
+    ctx.fillStyle = "#9b9d9f";
+    ctx.font = "12px sans-serif";
+    ctx.textAlign = "right";
+    ctx.fillText(`${label}`, PAD.left - 6, y + 4);
+  }
+
+  // Palkit
+  const now = new Date().getHours();
+  prices.forEach((p, i) => {
+    const x = PAD.left + i * xStep + 2;
+    const barH = ((p.price - minV) / range) * ch;
+    const y = PAD.top + ch - barH;
+    const isPast = parseInt(p.time) < now;
+    ctx.fillStyle = isPast ? "#4a4d52"
+      : p.price === Math.min(...vals) ? "#57f287"
+      : p.price === Math.max(...vals) ? "#ed4245"
+      : "#5865f2";
+    ctx.fillRect(x, y, xStep - 4, barH);
+  });
+
+  // X-akselitunnisteet (joka toinen tunti)
+  ctx.fillStyle = "#9b9d9f";
+  ctx.font = "11px sans-serif";
+  ctx.textAlign = "center";
+  prices.forEach((p, i) => {
+    if (i % 2 === 0) ctx.fillText(p.time, toX(i), H - PAD.bottom + 16);
+  });
+
+  // Nykyinen tunti -viiva
+  const nowX = PAD.left + now * xStep;
+  ctx.strokeStyle = "#fee75c";
+  ctx.lineWidth = 2;
+  ctx.setLineDash([4, 3]);
+  ctx.beginPath(); ctx.moveTo(nowX, PAD.top); ctx.lineTo(nowX, PAD.top + ch); ctx.stroke();
+  ctx.setLineDash([]);
+
+  // Otsikko
+  ctx.fillStyle = "#ffffff";
+  ctx.font = "bold 14px sans-serif";
+  ctx.textAlign = "left";
+  ctx.fillText("c/kWh", 4, PAD.top - 10);
+
+  return canvas.toBuffer("image/png");
+}
+
+
 
 async function haeSaa(kaupunki) {
   try {
@@ -186,7 +265,14 @@ const commands = [
   new SlashCommandBuilder().setName("nimipäivät").setDescription("Näyttää nimipäivät"),
   new SlashCommandBuilder().setName("nimihaku").setDescription("Hae nimipäivä")
     .addStringOption(o => o.setName("nimi").setDescription("Nimi").setRequired(true)),
-  new SlashCommandBuilder().setName("sahko").setDescription("Näyttää sähkön hinnan"),
+  new SlashCommandBuilder().setName("sahko").setDescription("Näyttää sähkön hinnan")
+    .addStringOption(o => o.setName("näkymä").setDescription("Mitä näytetään").setRequired(false)
+      .addChoices(
+        { name:"yhteenveto (oletus)", value:"yhteenveto" },
+        { name:"matalin – halvimmat tunnit", value:"matalin" },
+        { name:"kallein – kalleimmat tunnit", value:"kallein" },
+        { name:"kaikki – koko päivän lista", value:"kaikki" },
+      )),
   new SlashCommandBuilder().setName("saa").setDescription("Näyttää säätilan")
     .addStringOption(o => o.setName("kaupunki").setDescription("Kaupunki").setRequired(true)),
   new SlashCommandBuilder().setName("liikenne").setDescription("Näyttää tie- ja junaliikenteen häiriöt"),
@@ -207,6 +293,7 @@ client.on("interactionCreate", async interaction => {
 
   if (cmd === "nimipäivät") {
     return interaction.reply({
+      ephemeral: true,
       embeds: [new EmbedBuilder().setTitle("📅 Nimipäivät").setDescription(muotoileNimet(haeNimipaivat()))]
     });
   }
@@ -218,7 +305,7 @@ client.on("interactionCreate", async interaction => {
       .filter(([,nimet]) => nimet.map(n=>n.toLowerCase()).includes(nimi))
       .map(([pvm]) => pvm);
 
-    if (!loydot.length) return interaction.reply(`Nimelle **${nimi}** ei löytynyt nimipäivää.`);
+    if (!loydot.length) return interaction.reply({ content:`Nimelle **${nimi}** ei löytynyt nimipäivää.`, ephemeral:true });
 
     const kuukaudet = ["tammikuuta","helmikuuta","maaliskuuta","huhtikuuta","toukokuuta","kesäkuuta",
       "heinäkuuta","elokuuta","syyskuuta","lokakuuta","marraskuuta","joulukuuta"];
@@ -237,6 +324,7 @@ client.on("interactionCreate", async interaction => {
     }, { diff:Infinity });
 
     return interaction.reply({
+      ephemeral: true,
       embeds: [new EmbedBuilder()
         .setTitle("🔍 Nimipäivähaku")
         .setDescription(`**${nimi}**: ${formatted.map(f=>f.text).join(", ")}`)
@@ -245,21 +333,54 @@ client.on("interactionCreate", async interaction => {
   }
 
   if (cmd === "sahko") {
-    await interaction.deferReply();
+    await interaction.deferReply({ ephemeral:true });
     const data = await haePorssisahkoData(false);
-    return interaction.editReply({
-      embeds: [new EmbedBuilder()
-        .setTitle("⚡ Pörssisähkö").setURL("https://www.porssisahkoa.fi/")
-        .addFields(
-          { name:"🔻 Halvin", value:`${data.halvin.price} c/kWh\nklo ${data.halvin.time}`, inline:true },
-          { name:"⚖️ Keski",  value:`${data.keski} c/kWh`, inline:true },
-          { name:"🔺 Kallein",value:`${data.kallein.price} c/kWh\nklo ${data.kallein.time}`, inline:true }
-        )]
-    });
+    if (!data) return interaction.editReply("Sähkötietoja ei saatu haettua. Yritä hetken kuluttua uudelleen.");
+
+    const nakyma = interaction.options.getString("näkymä") || "yhteenveto";
+    const prices = data.kaikki;
+    const sorted = [...prices].sort((a,b) => a.price - b.price);
+
+    // Graafi aina mukana
+    const graafi = piirraGraafi(prices);
+    const attachment = new AttachmentBuilder(graafi, { name:"sahko.png" });
+
+    const embed = new EmbedBuilder()
+      .setTitle("⚡ Pörssisähkö")
+      .setURL("https://www.porssisahkoa.fi/")
+      .setImage("attachment://sahko.png");
+
+    if (nakyma === "yhteenveto") {
+      embed.addFields(
+        { name:"🔻 Halvin", value:`${data.halvin.price} c/kWh\nklo ${data.halvin.time}`, inline:true },
+        { name:"⚖️ Keski",  value:`${data.keski} c/kWh`, inline:true },
+        { name:"🔺 Kallein",value:`${data.kallein.price} c/kWh\nklo ${data.kallein.time}`, inline:true }
+      );
+    } else if (nakyma === "matalin") {
+      const halvimmat = sorted.slice(0, 5);
+      embed.addFields({ name:"🔻 Halvimmat tunnit", value:
+        halvimmat.map((p,i) => `${i+1}. klo ${p.time} — **${p.price} c/kWh**`).join("\n")
+      });
+    } else if (nakyma === "kallein") {
+      const kalleimmat = sorted.slice(-5).reverse();
+      embed.addFields({ name:"🔺 Kalleimmat tunnit", value:
+        kalleimmat.map((p,i) => `${i+1}. klo ${p.time} — **${p.price} c/kWh**`).join("\n")
+      });
+    } else if (nakyma === "kaikki") {
+      const lista = prices.map(p => `klo ${p.time} — ${p.price} c/kWh`).join("\n");
+      embed.addFields(
+        { name:"⚖️ Keskihinta", value:`${data.keski} c/kWh`, inline:true },
+        { name:"🔻 Halvin", value:`${data.halvin.price} c/kWh (klo ${data.halvin.time})`, inline:true },
+        { name:"🔺 Kallein", value:`${data.kallein.price} c/kWh (klo ${data.kallein.time})`, inline:true },
+        { name:"📋 Kaikki tunnit", value: lista }
+      );
+    }
+
+    return interaction.editReply({ embeds:[embed], files:[attachment] });
   }
 
   if (cmd === "saa") {
-    await interaction.deferReply();
+    await interaction.deferReply({ ephemeral:true });
     const kaupunki = interaction.options.getString("kaupunki");
     const data = await haeSaa(kaupunki);
     if (!data) return interaction.editReply("Säätietoja ei löytynyt.");
